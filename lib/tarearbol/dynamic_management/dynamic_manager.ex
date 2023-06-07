@@ -84,7 +84,7 @@ defmodule Tarearbol.DynamicManager do
   @typedoc "Post-instantion init handler type, that might be passed to `use DynamicManager` vis `init:`"
   @type init_handler ::
           nil
-          | (() -> Tarearbol.DynamicManager.payload())
+          | (-> Tarearbol.DynamicManager.payload())
           | (Tarearbol.DynamicManager.payload() -> Tarearbol.DynamicManager.payload())
           | (Tarearbol.DynamicManager.id(), Tarearbol.DynamicManager.payload() ->
                Tarearbol.DynamicManager.payload())
@@ -272,34 +272,52 @@ defmodule Tarearbol.DynamicManager do
                   manager: module(),
                   ring: HashRing.t()
                 }
+          @this {:global, __MODULE__}
 
           defstruct [:manager, :ring, state: :down, children: %{}]
 
           @spec start_link([{:manager, atom()}]) :: GenServer.on_start()
-          def start_link(manager: manager),
-            do: GenServer.start_link(__MODULE__, [manager: manager], name: __MODULE__)
+          def start_link(manager: manager) do
+            case GenServer.start_link(__MODULE__, [manager: manager], name: @this) do
+              {:error, {:already_started, _}} -> :ignore
+              other -> other
+            end
+          end
 
           @spec state :: t()
-          def state, do: GenServer.call(__MODULE__, :state)
+          def state, do: GenServer.call(@this, :state)
 
           @spec update_state(state :: :down | :up | :starting | :unknown) :: :ok
-          def update_state(state), do: GenServer.cast(__MODULE__, {:update_state, state})
+          def update_state(state), do: GenServer.cast(@this, {:update_state, state})
+
+          @spec eval(id :: DynamicManager.id(), (DynamicManager.id(), t() -> t() | {any(), t()})) ::
+                  :ok
+          def eval(id, fun) when is_function(fun, 1) or is_function(fun, 2),
+            do: GenServer.cast(@this, {:eval, id, fun})
 
           @spec put(id :: DynamicManager.id(), props :: map() | keyword()) :: :ok
-          def put(id, props), do: GenServer.cast(__MODULE__, {:put, id, props})
+          def put(id, props), do: GenServer.cast(@this, {:put, id, props})
 
           @spec update!(
                   id :: DynamicManager.id(),
                   (DynamicManager.Child.t() -> DynamicManager.Child.t())
                 ) :: :ok
-          def update!(id, fun), do: GenServer.cast(__MODULE__, {:update!, id, fun})
+          def update!(id, fun), do: GenServer.cast(@this, {:update!, id, fun})
 
           @spec del(id :: DynamicManager.id()) :: :ok
-          def del(id), do: GenServer.cast(__MODULE__, {:del, id})
+          def del(id), do: GenServer.cast(@this, {:del, id})
 
-          @spec get(id :: DynamicManager.id()) :: DynamicManager.Child.t()
+          @spec get(id :: DynamicManager.id()) :: DynamicManager.Child.t() | nil
           def get(id, default \\ nil),
-            do: GenServer.call(__MODULE__, {:get, id, default})
+            do: GenServer.call(@this, {:get, id, default})
+
+          @spec get_and_update(
+                  id :: DynamicManager.id(),
+                  (DynamicManager.Child.t() | nil ->
+                     :ignore | :remove | {:update, DynamicManager.Child.t() | nil})
+                ) :: DynamicManager.Child.t() | nil
+          def get_and_update(id, fun) when is_function(fun, 1),
+            do: GenServer.call(@this, {:get_and_update, id, fun})
 
           @impl GenServer
           def init(opts) do
@@ -319,12 +337,54 @@ defmodule Tarearbol.DynamicManager do
             do: {:reply, state, state}
 
           @impl GenServer
+          def handle_call({:eval, id, fun}, _from, %__MODULE__{} = state) do
+            {result, new_state} =
+              case fun.(id, state) do
+                {result, %__MODULE__{} = new_state} -> {result, new_state}
+                result -> {result, state}
+              end
+
+            {:reply, result, new_state}
+          end
+
+          @impl GenServer
           def handle_call(
                 {:get, id, default},
                 _from,
                 %__MODULE__{children: children} = state
               ),
               do: {:reply, Map.get(children, id, default), state}
+
+          @impl GenServer
+          def handle_call(
+                {:get_and_update, id, fun},
+                _from,
+                %__MODULE__{ring: ring, children: children} = state
+              ) do
+            value = Map.get(children, id)
+
+            {ring, children} =
+              case fun.(value) do
+                :ignore ->
+                  {ring, children}
+
+                :remove ->
+                  {ring && HashRing.remove_node(ring, id), Map.delete(children, id)}
+
+                {:update, %DynamicManager.Child{} = child} ->
+                  {ring && HashRing.add_node(ring, id), Map.put(children, id, child)}
+              end
+
+            {:reply, value, %__MODULE__{state | ring: ring, children: children}}
+          end
+
+          @impl GenServer
+          def handle_cast({:eval, id, fun}, %__MODULE__{} = state) do
+            {:reply, _result, new_state} =
+              handle_call({:eval, id, fun}, {self(), make_ref()}, state)
+
+            {:noreply, new_state}
+          end
 
           @impl GenServer
           def handle_cast(
@@ -411,8 +471,8 @@ defmodule Tarearbol.DynamicManager do
 
       @impl Tarearbol.DynamicManager
       def perform(id, _payload) do
-        Logger.warn(
-          "perform for id[#{id}] was executed with state\n\n" <>
+        Logger.warning(
+          "[🌴] perform for id[#{inspect(id)}] was executed with state\n\n" <>
             inspect(__state_module__().state()) <>
             "\n\nyou want to override `perform/2` in your #{inspect(__MODULE__)}\n" <>
             "to perform some actual work instead of printing this message"
@@ -423,8 +483,8 @@ defmodule Tarearbol.DynamicManager do
 
       @impl Tarearbol.DynamicManager
       def call(_message, _from, {id, _payload}) do
-        Logger.warn(
-          "call for id[#{id}] was executed with state\n\n" <>
+        Logger.warning(
+          "[🌴] call for id[#{inspect(id)}] was executed with state\n\n" <>
             inspect(__state_module__().state()) <>
             "\n\nyou want to override `call/3` in your #{inspect(__MODULE__)}\n" <>
             "to perform some actual work instead of printing this message"
@@ -435,8 +495,8 @@ defmodule Tarearbol.DynamicManager do
 
       @impl Tarearbol.DynamicManager
       def cast(_message, {id, _payload}) do
-        Logger.warn(
-          "cast for id[#{id}] was executed with state\n\n" <>
+        Logger.warning(
+          "[🌴] cast for id[#{inspect(id)}] was executed with state\n\n" <>
             inspect(__state_module__().state()) <>
             "\n\nyou want to override `cast/2` in your #{inspect(__MODULE__)}\n" <>
             "to perform some actual work instead of printing this message"
@@ -448,9 +508,9 @@ defmodule Tarearbol.DynamicManager do
       @impl Tarearbol.DynamicManager
       def terminate(reason, {id, payload}) do
         Logger.info(
-          "Exiting DynamicWorker[" <>
+          "[🌴] Exiting DynamicWorker ‹" <>
             inspect(id) <>
-            "] with reason " <> inspect(reason) <> ". Payload: " <> inspect(payload)
+            "› with reason " <> inspect(reason) <> ". Payload: " <> inspect(payload)
         )
       end
 
@@ -458,12 +518,13 @@ defmodule Tarearbol.DynamicManager do
 
       @impl Tarearbol.DynamicManager
       def handle_state_change(state),
-        do: Logger.info("[#{inspect(__MODULE__)}] state has changed to #{state}")
+        do: Logger.info("[🌴] #{inspect(__MODULE__)}’s state has changed to #{state}")
 
       defoverridable handle_state_change: 1
 
       @impl Tarearbol.DynamicManager
-      def handle_timeout(state), do: Logger.warn("A worker is too slow [#{inspect(state)}]")
+      def handle_timeout(state),
+        do: Logger.warning("[🌴] a worker is too slow [#{inspect(state)}]")
 
       defoverridable handle_timeout: 1
 
@@ -485,7 +546,7 @@ defmodule Tarearbol.DynamicManager do
         ]
 
         Logger.info(
-          "Starting #{inspect(__MODULE__)} with following children:\n" <>
+          "[🌴] Starting #{inspect(__MODULE__)} with following children:\n" <>
             "    Registry → #{inspect(@registry_module)}\n" <>
             "    State → #{inspect(@state_module)}\n" <>
             "    DynamicSupervisor → #{inspect(__dynamic_supervisor_module__())}\n" <>
@@ -663,8 +724,8 @@ defmodule Tarearbol.DynamicManager do
   |a
   defp report_override(nil, mod, kind, name, arity) when name in @reserved,
     do:
-      Logger.warn("""
-      You are trying to override the reserved function in `#{kind} #{inspect(Function.capture(mod, name, arity))}`.
+      Logger.warning("""
+      [🌴] You are trying to override the reserved function in `#{kind} #{inspect(Function.capture(mod, name, arity))}`.
       Please consider choosing another name.
       """)
 

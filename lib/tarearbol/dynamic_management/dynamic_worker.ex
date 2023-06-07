@@ -54,14 +54,17 @@ defmodule Tarearbol.DynamicWorker do
 
   @impl GenServer
   def terminate(reason, %{manager: manager, id: id, payload: payload}) do
-    result = manager.terminate(reason, {id, payload})
-    manager.__state_module__().del(id)
-    result
+    reason
+    |> manager.terminate({id, payload})
+    |> tap(fn _ -> manager.__state_module__().del(id) end)
   end
 
   @impl GenServer
   def handle_info({:EXIT, _pid, reason}, state) do
-    Logger.warn("Unexpected EXIT reason " <> inspect(reason) <> "\nState:\n" <> inspect(state))
+    Logger.warning(
+      "[🌴] Unexpected EXIT reason " <> inspect(reason) <> "\nState:\n" <> inspect(state)
+    )
+
     {:stop, reason, state}
   end
 
@@ -124,9 +127,16 @@ defmodule Tarearbol.DynamicWorker do
   defp schedule_work(timeout), do: Process.send_after(self(), :work, timeout)
 
   @spec handle_request(Tarearbol.DynamicManager.id(), module()) :: Tarearbol.DynamicManager.id()
-  defp handle_request(id, manager) do
-    manager.__state_module__().update!(id, &%{&1 | busy?: DateTime.utc_now()})
-    id
+  case Code.ensure_compiled(Cloister) do
+    {:module, Cloister} ->
+      defp handle_request(id, _manager), do: id
+
+    {:error, _} ->
+      defp handle_request(id, manager),
+        do:
+          tap(id, fn id ->
+            manager.__state_module__().update!(id, &%{&1 | busy?: DateTime.utc_now()})
+          end)
   end
 
   @spec handle_response(Tarearbol.DynamicManager.response(), state, boolean()) ::
@@ -137,8 +147,9 @@ defmodule Tarearbol.DynamicWorker do
          %{manager: manager, timeout: timeout, id: id, payload: payload, lull: lull} = state,
          reschedule
        ) do
-    restate = fn value ->
-      manager.__state_module__().update!(id, &%{&1 | value: value, busy?: nil})
+    restate = fn
+      nil -> :ok
+      value -> manager.__state_module__().update!(id, &%{&1 | value: value, busy?: nil})
     end
 
     state =
@@ -148,8 +159,8 @@ defmodule Tarearbol.DynamicWorker do
           state
 
         :multihalt ->
-          Logger.warn("""
-          Returning `:multihalt` from callbacks is deprecated.
+          Logger.warning("""
+          [🌴] Returning `:multihalt` from callbacks is deprecated.
           Use `distributed: true` parameter in call to `use Tarearbol.DynamicManager`
             and return regular `:halt` instead.
           """)
@@ -183,15 +194,14 @@ defmodule Tarearbol.DynamicWorker do
           %{state | timeout: new_timeout, payload: result, lull: lull * new_timeout / timeout}
 
         {:ok, result} ->
-          restate.(result)
-          state
+          %{state | payload: result}
 
         result ->
           restate.(result)
           state
       end
 
-    if reschedule, do: schedule_work(state.timeout)
+    _ = if reschedule, do: schedule_work(state.timeout)
     state
   end
 end

@@ -4,7 +4,7 @@ defmodule Tarearbol.Mixfile do
   use Mix.Project
 
   @app :tarearbol
-  @version "1.9.1"
+  @version "1.10.2"
 
   def project do
     [
@@ -30,7 +30,7 @@ defmodule Tarearbol.Mixfile do
       ],
       dialyzer: [
         plt_file: {:no_warn, ".dialyzer/plts/dialyzer.plt"},
-        plt_add_deps: :transitive,
+        plt_add_deps: :app_tree,
         plt_add_apps: [:mix],
         list_unused_filters: true,
         ignore_warnings: ".dialyzer/ignore.exs"

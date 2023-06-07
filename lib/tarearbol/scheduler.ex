@@ -61,7 +61,7 @@ defmodule Tarearbol.Scheduler do
   @type runner ::
           {atom(), atom()}
           | {atom(), atom(), list()}
-          | (() -> :halt | {:ok | {:reschedule, binary()}, any()})
+          | (-> :halt | {:ok | {:reschedule, binary()}, any()})
 
   @typedoc """
   Type of possible job schedules to be run repeatedly: binary cron format
@@ -149,7 +149,7 @@ defmodule Tarearbol.Scheduler do
         f when is_function(f, 0) -> f.()
       end
 
-    Logger.info("[⌚] Job ##{job.name} has been performed: #{inspect(result)}")
+    Logger.info("[🌴] Job ##{job.name} has been performed: #{inspect(result)}")
 
     case {job.once?, result} do
       {true, _} ->
@@ -165,8 +165,8 @@ defmodule Tarearbol.Scheduler do
         {:replace, id, %{payload | job: %Job{job | schedule: schedule}}}
 
       {_, result} ->
-        Logger.warn(
-          "[⌚] Unexpected return from the job: #{inspect(result)}, must be :halt, or {:ok, _}, or {{:reschedule, _}, _}"
+        Logger.warning(
+          "[🌴] Unexpected return from the job: #{inspect(result)}, must be :halt, or {:ok, _}, or {{:reschedule, _}, _}"
         )
 
         {{:timeout, timeout(job.schedule)}, result}
@@ -185,7 +185,7 @@ defmodule Tarearbol.Scheduler do
           name :: binary(),
           runner :: runner(),
           schedule :: repeated_schedule() | once_schedule()
-        ) :: :abcast
+        ) :: :ok
   def push(name, runner, schedule) do
     {name, opts} = job!(name, runner, schedule)
     Tarearbol.Scheduler.put(name, opts)
@@ -201,7 +201,7 @@ defmodule Tarearbol.Scheduler do
           name :: binary(),
           runner :: runner(),
           schedule :: repeated_schedule() | once_schedule()
-        ) :: :abcast
+        ) :: :ok
   def push!(name, runner, schedule) do
     File.write!(config_file(), Macro.to_string([{name, runner, schedule} | jobs()]))
     push(name, runner, schedule)

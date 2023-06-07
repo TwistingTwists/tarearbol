@@ -5,7 +5,7 @@ defmodule Tarearbol.Errand do
 
   require Logger
 
-  @typep job :: (() -> any()) | {module(), atom()}
+  @typep job :: (-> any()) | {module(), atom()}
 
   @default_opts [
     repeatedly: false
@@ -41,7 +41,7 @@ defmodule Tarearbol.Errand do
   @deprecated "Use external function or `{m, f}` or `{m, f, a}` tuple as the job instead"
   defp do_run_in(:local, job, interval, opts) do
     Logger.debug(
-      "[DEPRECATED] spawning local functions is deprecated; use external function or `{m, f}` or `{m, f, a}` tuple as the job instead"
+      "[🌴] [DEPRECATED] spawning local functions is deprecated; use external function or `{m, f}` or `{m, f, a}` tuple as the job instead"
     )
 
     Tarearbol.Application.task!(fn ->
@@ -95,7 +95,7 @@ defmodule Tarearbol.Errand do
     do: run_at(job, DateTime.from_iso8601(at), opts)
 
   @doc "Spawns the task by calling `run_in` with a zero interval"
-  @spec spawn((() -> any()) | {module(), atom(), list()}, keyword()) :: :ok | Task.t()
+  @spec spawn((-> any()) | {module(), atom(), list()}, keyword()) :: :ok | Task.t()
   def spawn(job, opts \\ opts()), do: run_in(job, :none, opts)
 
   ##############################################################################
